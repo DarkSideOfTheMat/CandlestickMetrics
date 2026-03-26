@@ -108,13 +108,15 @@ def write_pitches_to_parquet(game_id: int, new_rows: list[dict]):
     if not new_rows:
         return
     path = get_parquet_path(game_id)
+    tmp_path = path.with_suffix(".parquet.tmp")
     new_df = pd.DataFrame(new_rows)
     if path.exists():
         existing_df = pd.read_parquet(path)
         combined_df = pd.concat([existing_df, new_df], ignore_index=True)
     else:
         combined_df = new_df
-    combined_df.to_parquet(path, index=False)
+    combined_df.to_parquet(tmp_path, index=False)
+    tmp_path.rename(path)  # atomic on same filesystem
 
 
 def fetch_pitches_full(game_id: int, known_keys: set) -> list[dict]:
