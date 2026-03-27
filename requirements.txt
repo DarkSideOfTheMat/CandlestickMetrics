@@ -31,6 +31,7 @@ jsonschema-specifications==2025.9.1
 kiwisolver==1.5.0
 leather==0.4.1
 lxml==6.0.2
+marimo==0.13.0
 MarkupSafe==3.0.3
 mashumaro==3.14
 matplotlib==3.10.8

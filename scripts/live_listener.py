@@ -42,6 +42,7 @@ def flatten_pitch_event(game_id: int, play: dict, event: dict) -> dict:
     hit_data = event.get("hitData", {})
     pitch_type = details.get("type", {})
     call = details.get("call", {})
+    review = event.get("reviewDetails", {})
 
     return {
         "game_id": game_id,
@@ -89,6 +90,12 @@ def flatten_pitch_event(game_id: int, play: dict, event: dict) -> dict:
         "at_bat_event": result.get("event"),
         "at_bat_event_type": result.get("eventType"),
         "at_bat_description": result.get("description"),
+        "has_review": details.get("hasReview", False),
+        "review_overturned": review.get("isOverturned"),
+        "review_in_progress": review.get("inProgress"),
+        "challenge_team_id": review.get("challengeTeamId"),
+        "challenger_id": review.get("player", {}).get("id"),
+        "challenger_name": review.get("player", {}).get("fullName"),
     }
 
 
