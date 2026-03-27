@@ -27,6 +27,11 @@ def parse_args():
         "--date", type=str, help="Date to monitor (YYYY-MM-DD, default: today)"
     )
     parser.add_argument("--game", type=int, help="Specific gamePk to monitor")
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Rewrite all existing parquet files using the current schema",
+    )
     return parser.parse_args()
 
 
@@ -140,6 +145,43 @@ def fetch_pitches_full(game_id: int, known_keys: set) -> list[dict]:
     return new_rows
 
 
+def fetch_all_pitches(game_id: int) -> list[dict]:
+    """Fetch every pitch for a game, ignoring any existing data."""
+    data = statsapi.get("game_playByPlay", {"gamePk": game_id})
+    rows = []
+    for play in data.get("allPlays", []):
+        for event in play.get("playEvents", []):
+            if not event.get("isPitch"):
+                continue
+            rows.append(flatten_pitch_event(game_id, play, event))
+    return rows
+
+
+def backfill_parquet_files():
+    """Rewrite every existing parquet file using the current schema."""
+    files = sorted(LIVE_DATA_DIR.glob("game_*.parquet"))
+    if not files:
+        print("No parquet files found to backfill.")
+        return
+
+    print(f"Backfilling {len(files)} parquet file(s)...")
+    for path in files:
+        game_id = int(path.stem.replace("game_", ""))
+        try:
+            rows = fetch_all_pitches(game_id)
+            if rows:
+                tmp_path = path.with_suffix(".parquet.tmp")
+                pd.DataFrame(rows).to_parquet(tmp_path, index=False)
+                tmp_path.rename(path)
+                print(f"  game_{game_id}: rewrote {len(rows)} pitches")
+            else:
+                print(f"  game_{game_id}: no pitches returned from API, skipping")
+        except Exception as e:
+            print(f"  game_{game_id}: ERROR - {e}")
+
+    print("Backfill complete.")
+
+
 def fetch_schedule(target_date: str, team_filter: str | None = None) -> list[dict]:
     games = statsapi.schedule(date=target_date)
     if team_filter:
@@ -221,6 +263,10 @@ async def main():
     target_date = args.date or date.today().isoformat()
 
     LIVE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.backfill:
+        backfill_parquet_files()
+        return
     executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)
     active_tasks: dict[int, asyncio.Task] = {}
     monitors: dict[int, GameMonitor] = {}
