@@ -29,7 +29,7 @@ def _():
 def _(candlestick_metrics, mo):
     _df = mo.sql(
         f"""
-        SELECT * FROM main.stg_live_pitch_events
+        SELECT * FROM READ_PARQUET('data/live/pitches/*.parquet', union_by_name=True)
         """,
         engine=candlestick_metrics
     )
