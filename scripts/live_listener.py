@@ -1,5 +1,5 @@
 """
-Live pitch-by-pitch listener using MLB-StatsAPI.
+Live pitch-by-pitch listener using mlb-statsapi-pydantic typed client.
 Polls active games and writes new pitch events to Parquet files.
 """
 
@@ -11,9 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 import pandas as pd
-import statsapi
+from mlb_statsapi import MlbClient
+from mlb_statsapi.models.livefeed import HitData, LiveFeedResponse, Play, PlayEvent
+from mlb_statsapi.models.schedule import ScheduleGame, ScheduleResponse
 
 from mlb_config import LIVE_DATA_DIR, STATSAPI_ID_TO_KEY, TEAM_MAPPING, SEASON
+
+# Module-level client instance, reused across calls
+_client = MlbClient()
 
 POLL_INTERVAL = 15  # seconds between pitch polls per game
 SCHEDULE_INTERVAL = 300  # seconds between schedule refreshes
@@ -35,67 +40,72 @@ def parse_args():
     return parser.parse_args()
 
 
-def flatten_pitch_event(game_id: int, play: dict, event: dict) -> dict:
-    about = play.get("about", {})
-    matchup = play.get("matchup", {})
-    result = play.get("result", {})
-    details = event.get("details", {})
-    pitch_data = event.get("pitchData", {})
-    coordinates = pitch_data.get("coordinates", {})
-    breaks = pitch_data.get("breaks", {})
-    count = event.get("count", {})
-    hit_data = event.get("hitData", {})
-    pitch_type = details.get("type", {})
-    call = details.get("call", {})
-    review = event.get("reviewDetails", {})
+def flatten_pitch_event(game_id: int, play: Play, event: PlayEvent) -> dict:
+    about = play.about
+    matchup = play.matchup
+    result = play.result
+    details = event.details
+    pd_ = event.pitch_data
+    coordinates = pd_.coordinates if pd_ else None
+    breaks = pd_.breaks if pd_ else None
+    count = event.count
+
+    hit = event.hit_data
+
+    # reviewDetails is not yet modeled on PlayEvent — access via model_extra
+    # See: https://github.com/DarkSideOfTheMat/mlb-statsapi-pydantic/issues
+    review = (event.model_extra or {}).get("reviewDetails", {})
+
+    pitch_type = details.type if details else None
+    call = details.call if details else None
 
     return {
         "game_id": game_id,
-        "play_index": play.get("atBatIndex"),
-        "pitch_index": event.get("index"),
-        "pitch_number": event.get("pitchNumber"),
-        "timestamp": event.get("startTime"),
-        "inning": about.get("inning"),
-        "half_inning": about.get("halfInning"),
-        "batter_id": matchup.get("batter", {}).get("id"),
-        "batter_name": matchup.get("batter", {}).get("fullName"),
-        "pitcher_id": matchup.get("pitcher", {}).get("id"),
-        "pitcher_name": matchup.get("pitcher", {}).get("fullName"),
-        "bat_side": matchup.get("batSide", {}).get("code"),
-        "pitch_hand": matchup.get("pitchHand", {}).get("code"),
-        "pitch_type": pitch_type.get("code"),
-        "pitch_description": pitch_type.get("description"),
-        "call_code": call.get("code"),
-        "call_description": call.get("description"),
-        "start_speed": pitch_data.get("startSpeed"),
-        "end_speed": pitch_data.get("endSpeed"),
-        "zone": pitch_data.get("zone"),
-        "plate_x": coordinates.get("pX"),
-        "plate_z": coordinates.get("pZ"),
-        "pfx_x": coordinates.get("pfxX"),
-        "pfx_z": coordinates.get("pfxZ"),
-        "extension": pitch_data.get("extension"),
-        "spin_rate": breaks.get("spinRate"),
-        "spin_direction": breaks.get("spinDirection"),
-        "break_angle": breaks.get("breakAngle"),
-        "break_length": breaks.get("breakLength"),
-        "break_vertical": breaks.get("breakVertical"),
-        "break_vertical_induced": breaks.get("breakVerticalInduced"),
-        "break_horizontal": breaks.get("breakHorizontal"),
-        "balls": count.get("balls"),
-        "strikes": count.get("strikes"),
-        "outs": count.get("outs"),
-        "is_in_play": details.get("isInPlay"),
-        "is_strike": details.get("isStrike"),
-        "is_ball": details.get("isBall"),
-        "launch_speed": hit_data.get("launchSpeed"),
-        "launch_angle": hit_data.get("launchAngle"),
-        "hit_distance": hit_data.get("totalDistance"),
-        "hit_trajectory": hit_data.get("trajectory"),
-        "at_bat_event": result.get("event"),
-        "at_bat_event_type": result.get("eventType"),
-        "at_bat_description": result.get("description"),
-        "has_review": details.get("hasReview", False),
+        "play_index": play.at_bat_index,
+        "pitch_index": event.index,
+        "pitch_number": event.pitch_number,
+        "timestamp": event.start_time.isoformat() if event.start_time else None,
+        "inning": about.inning if about else None,
+        "half_inning": str(about.half_inning) if about and about.half_inning else None,
+        "batter_id": matchup.batter.id if matchup else None,
+        "batter_name": matchup.batter.full_name if matchup else None,
+        "pitcher_id": matchup.pitcher.id if matchup else None,
+        "pitcher_name": matchup.pitcher.full_name if matchup else None,
+        "bat_side": matchup.bat_side.code if matchup and matchup.bat_side else None,
+        "pitch_hand": matchup.pitch_hand.code if matchup and matchup.pitch_hand else None,
+        "pitch_type": pitch_type.code if pitch_type else None,
+        "pitch_description": pitch_type.description if pitch_type else None,
+        "call_code": call.code if call else None,
+        "call_description": call.description if call else None,
+        "start_speed": pd_.start_speed if pd_ else None,
+        "end_speed": pd_.end_speed if pd_ else None,
+        "zone": pd_.zone if pd_ else None,
+        "plate_x": coordinates.p_x if coordinates else None,
+        "plate_z": coordinates.p_z if coordinates else None,
+        "pfx_x": coordinates.pfx_x if coordinates else None,
+        "pfx_z": coordinates.pfx_z if coordinates else None,
+        "extension": pd_.extension if pd_ else None,
+        "spin_rate": breaks.spin_rate if breaks else None,
+        "spin_direction": breaks.spin_direction if breaks else None,
+        "break_angle": breaks.break_angle if breaks else None,
+        "break_length": breaks.break_length if breaks else None,
+        "break_vertical": breaks.break_vertical if breaks else None,
+        "break_vertical_induced": breaks.break_vertical_induced if breaks else None,
+        "break_horizontal": breaks.break_horizontal if breaks else None,
+        "balls": count.balls if count else None,
+        "strikes": count.strikes if count else None,
+        "outs": count.outs if count else None,
+        "is_in_play": details.is_in_play if details else None,
+        "is_strike": details.is_strike if details else None,
+        "is_ball": details.is_ball if details else None,
+        "launch_speed": hit.launch_speed if hit else None,
+        "launch_angle": hit.launch_angle if hit else None,
+        "hit_distance": hit.total_distance if hit else None,
+        "hit_trajectory": str(hit.trajectory) if hit and hit.trajectory else None,
+        "at_bat_event": result.event if result else None,
+        "at_bat_event_type": str(result.event_type) if result and result.event_type else None,
+        "at_bat_description": result.description if result else None,
+        "has_review": details.has_review if details else False,
         "review_overturned": review.get("isOverturned"),
         "review_in_progress": review.get("inProgress"),
         "challenge_team_id": review.get("challengeTeamId"),
@@ -132,28 +142,30 @@ def write_pitches_to_parquet(game_id: int, new_rows: list[dict]):
 
 
 def fetch_pitches_full(game_id: int, known_keys: set) -> list[dict]:
-    data = statsapi.get("game_playByPlay", {"gamePk": game_id})
+    feed: LiveFeedResponse = _client.game(game_pk=game_id)
     new_rows = []
-    for play in data.get("allPlays", []):
-        for event in play.get("playEvents", []):
-            if not event.get("isPitch"):
-                continue
-            key = (play.get("atBatIndex"), event.get("index"))
-            if key in known_keys:
-                continue
-            new_rows.append(flatten_pitch_event(game_id, play, event))
+    if feed.live_data and feed.live_data.plays:
+        for play in feed.live_data.plays.all_plays:
+            for event in play.play_events:
+                if not event.is_pitch:
+                    continue
+                key = (play.at_bat_index, event.index)
+                if key in known_keys:
+                    continue
+                new_rows.append(flatten_pitch_event(game_id, play, event))
     return new_rows
 
 
 def fetch_all_pitches(game_id: int) -> list[dict]:
     """Fetch every pitch for a game, ignoring any existing data."""
-    data = statsapi.get("game_playByPlay", {"gamePk": game_id})
+    feed: LiveFeedResponse = _client.game(game_pk=game_id)
     rows = []
-    for play in data.get("allPlays", []):
-        for event in play.get("playEvents", []):
-            if not event.get("isPitch"):
-                continue
-            rows.append(flatten_pitch_event(game_id, play, event))
+    if feed.live_data and feed.live_data.plays:
+        for play in feed.live_data.plays.all_plays:
+            for event in play.play_events:
+                if not event.is_pitch:
+                    continue
+                rows.append(flatten_pitch_event(game_id, play, event))
     return rows
 
 
@@ -182,8 +194,31 @@ def backfill_parquet_files():
     print("Backfill complete.")
 
 
+def _date_to_mlb_format(iso_date: str) -> str:
+    """Convert YYYY-MM-DD to MM/DD/YYYY for the MLB Stats API client."""
+    parts = iso_date.split("-")
+    return f"{parts[1]}/{parts[2]}/{parts[0]}"
+
+
+def _schedule_game_to_dict(game: ScheduleGame) -> dict:
+    """Convert typed ScheduleGame to the dict format GameMonitor expects."""
+    return {
+        "game_id": int(game.game_pk),
+        "home_name": game.teams.home.team.name or "Unknown",
+        "away_name": game.teams.away.team.name or "Unknown",
+        "home_id": game.teams.home.team.id,
+        "away_id": game.teams.away.team.id,
+        "status": game.status.detailed_state or game.status.abstract_game_state or "Unknown",
+    }
+
+
 def fetch_schedule(target_date: str, team_filter: str | None = None) -> list[dict]:
-    games = statsapi.schedule(date=target_date)
+    mlb_date = _date_to_mlb_format(target_date)
+    schedule: ScheduleResponse = _client.schedule(date=mlb_date)
+    games = []
+    for d in schedule.dates:
+        for game in d.games:
+            games.append(_schedule_game_to_dict(game))
     if team_filter:
         team_info = TEAM_MAPPING.get(team_filter)
         if not team_info:
@@ -284,10 +319,19 @@ async def main():
         # Single game mode
         print(f"Monitoring game {args.game}...")
         game_info = {"game_id": args.game, "home_name": "?", "away_name": "?", "status": "In Progress"}
-        # Try to get actual game info from schedule
-        games = statsapi.schedule(game_id=args.game)
-        if games:
-            game_info = games[0]
+        # Get game info from the live feed directly since the typed client's
+        # schedule() doesn't support game_id lookup (unlike old statsapi).
+        try:
+            feed: LiveFeedResponse = _client.game(game_pk=args.game)
+            gd = feed.game_data
+            game_info = {
+                "game_id": int(feed.game_pk),
+                "home_name": gd.teams.home.name if gd.teams and gd.teams.home else "?",
+                "away_name": gd.teams.away.name if gd.teams and gd.teams.away else "?",
+                "status": gd.status.detailed_state if gd.status else "In Progress",
+            }
+        except Exception as e:
+            print(f"  Warning: could not fetch game info: {e}")
         monitor = GameMonitor(game_info)
         monitors[args.game] = monitor
         task = asyncio.create_task(poll_game(monitor, executor))
