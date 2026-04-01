@@ -35,7 +35,7 @@ marimo==0.13.0
 MarkupSafe==3.0.3
 mashumaro==3.14
 matplotlib==3.10.8
-mlb-statsapi-pydantic @ git+https://github.com/DarkSideOfTheMat/mlb-statsapi-pydantic.git@main
+mlb-statsapi-pydantic==0.0.1
 more-itertools==10.8.0
 msgpack==1.1.2
 networkx==3.6.1
