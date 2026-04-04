@@ -205,6 +205,47 @@ def flatten_linescore_innings(feed: LiveFeedResponse, game_pk: int) -> list[dict
     return rows
 
 
+def format_linescore(linescore: Linescore, away: str, home: str) -> str:
+    """Format a linescore as a classic baseball box score string.
+
+    Example output:
+                 1  2  3  4  5  6  7  8  9     R  H  E  LOB
+    Red Sox      0  1  0  0  2  0  0  0  0     3  7  1   6
+    Yankees      0  0  0  1  0  0  0  0  2     3  8  0   5
+    """
+    innings = linescore.innings or []
+    num_cols = max(len(innings), 9)
+
+    # Team name column width
+    name_w = max(len(away), len(home), 4) + 2
+
+    # Build lookup of inning data by number
+    inning_map = {inn.num: inn for inn in innings}
+
+    # Inning numbers header
+    inning_nums = "".join(f"{i:>3}" for i in range(1, num_cols + 1))
+    header = " " * name_w + inning_nums + "      R  H  E  LOB"
+
+    def _side_line(name: str, side: str) -> str:
+        cells = []
+        for i in range(1, num_cols + 1):
+            inn = inning_map.get(i)
+            team_line = getattr(inn, side, None) if inn else None
+            r = team_line.runs if team_line and team_line.runs is not None else " "
+            cells.append(f"{r:>3}")
+        inning_cells = "".join(cells)
+
+        totals = getattr(linescore.teams, side, None) if linescore.teams else None
+        r = totals.runs if totals and totals.runs is not None else 0
+        h = totals.hits if totals and totals.hits is not None else 0
+        e = totals.errors if totals and totals.errors is not None else 0
+        lob = totals.left_on_base if totals and totals.left_on_base is not None else 0
+        return f"{name:<{name_w}}{inning_cells}    {r:>2} {h:>2} {e:>2}  {lob:>2}"
+
+    lines = [header, _side_line(away, "away"), _side_line(home, "home")]
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Boxscore flattening
 # ---------------------------------------------------------------------------
@@ -366,10 +407,13 @@ FINAL_STATES = frozenset({"Final", "Game Over", "Completed Early"})
 class GameMonitor:
     """Tracks state for a single game being polled."""
 
-    def __init__(self, game_pk: int, away: str, home: str, status: str):
+    def __init__(self, game_pk: int, away: str, home: str, status: str,
+                 away_abbrev: str = "", home_abbrev: str = ""):
         self.game_pk = game_pk
         self.away = away
         self.home = home
+        self.away_abbrev = away_abbrev or away
+        self.home_abbrev = home_abbrev or home
         self.status = status
         self.known_keys = load_known_keys(game_pk)
         self.total_new = 0
@@ -473,6 +517,7 @@ class GameMonitor:
                     if ls_rows:
                         write_linescore(self.game_pk, ls_rows)
                         print(f"  {self.label}: linescore updated (inning {feed.live_data.linescore.current_inning})")
+                        print(format_linescore(feed.live_data.linescore, self.away_abbrev, self.home_abbrev))
 
             # --- Boxscore (on lineup/pitching change) ---
             if feed.live_data and feed.live_data.boxscore:
@@ -492,7 +537,29 @@ class GameMonitor:
             return 0
 
     def write_final(self, feed: LiveFeedResponse):
-        """Final flush of all metadata at game end."""
+        """Final flush of all data (pitches + metadata) at game end."""
+        self._cache_team_ids(feed)
+
+        # --- Pitch events ---
+        new_rows = []
+        if feed.live_data and feed.live_data.plays:
+            for play in feed.live_data.plays.all_plays:
+                for pitch in play.pitches:
+                    key = (play.at_bat_index, pitch.index)
+                    if key not in self.known_keys:
+                        row = flatten_pitch(self.game_pk, play, pitch)
+                        row["home_team_id"] = self.home_team_id
+                        row["away_team_id"] = self.away_team_id
+                        new_rows.append(row)
+
+        if new_rows:
+            write_parquet(self.game_pk, new_rows)
+            for row in new_rows:
+                self.known_keys.add((row["play_index"], row["pitch_index"]))
+            self.total_new += len(new_rows)
+            print(f"  {self.label}: +{len(new_rows)} pitches ({len(self.known_keys)} total)")
+
+        # --- Metadata ---
         write_game_info(self.game_pk, flatten_game_info(feed))
         ls_rows = flatten_linescore_innings(feed, self.game_pk)
         if ls_rows:
@@ -507,10 +574,14 @@ class GameMonitor:
     @classmethod
     def from_live_feed(cls, feed: LiveFeedResponse) -> "GameMonitor":
         gd = feed.game_data
+        away_team = gd.teams.away if gd.teams else None
+        home_team = gd.teams.home if gd.teams else None
         return cls(
             game_pk=int(feed.game_pk),
-            away=gd.teams.away.name if gd.teams and gd.teams.away else "?",
-            home=gd.teams.home.name if gd.teams and gd.teams.home else "?",
+            away=away_team.name if away_team else "?",
+            home=home_team.name if home_team else "?",
+            away_abbrev=(away_team.model_extra or {}).get("abbreviation", "") if away_team else "?",
+            home_abbrev=(home_team.model_extra or {}).get("abbreviation", "") if home_team else "?",
             status=gd.status.detailed_state if gd.status else "Unknown",
         )
 
@@ -535,6 +606,8 @@ async def poll_game(monitor: GameMonitor, client: AsyncMlbClient, shutdown: asyn
         try:
             feed = await client.game(game_pk=monitor.game_pk)
             monitor.write_final(feed)
+            if feed.live_data and feed.live_data.linescore:
+                print(format_linescore(feed.live_data.linescore, monitor.away_abbrev, monitor.home_abbrev))
         except Exception as e:
             print(f"  {monitor.label}: ERROR on final flush: {e}")
     print(
@@ -569,7 +642,7 @@ async def fetch_schedule(
             sys.exit(1)
         team_id = team_info["statsapi_id"]
 
-    schedule = await client.schedule(date=mlb_date, team_id=team_id)
+    schedule = await client.schedule(date=mlb_date, team_id=team_id, hydrate="team")
 
     monitors = []
     for d in schedule.dates:
@@ -579,6 +652,8 @@ async def fetch_schedule(
                 game_pk=int(game.game_pk),
                 away=game.teams.away.team.name or "?",
                 home=game.teams.home.team.name or "?",
+                away_abbrev=game.teams.away.team.abbreviation or "?",
+                home_abbrev=game.teams.home.team.abbreviation or "?",
                 status=status,
             ))
     return monitors
