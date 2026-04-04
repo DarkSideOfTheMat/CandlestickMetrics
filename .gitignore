@@ -39,3 +39,7 @@ data/*.duckdb.wal
 data/live/
 *.parquet.tmp
 .user.yml
+
+# marimo
+analyses/__marimo__/
+analyses/Test*
