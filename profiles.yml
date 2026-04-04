@@ -4,4 +4,4 @@ candlestick_metrics:
     dev:
       type: duckdb
       path: data/candlestick_metrics.duckdb
-      threads: 4
+      threads: 1

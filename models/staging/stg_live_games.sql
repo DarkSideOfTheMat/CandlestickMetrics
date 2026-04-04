@@ -1,9 +1,23 @@
-SELECT 
-  game_id,
-  ARBITRARY()
-  MAX_BY()
-  MIN(timestamp) AS first_pitch_time,
-  MAX(timestamp) AS last_pitch_time,
+SELECT
+  game_pk,
+  game_date,
+  game_datetime,
+  home_teamid,
+  home_team_name,
+  away_teamid,
+  away_team_name,
+  venue_id,
+  venue_name,
+  day_night,
+  game_type,
+  season,
+  scheduled_innings,
+  weather_condition,
+  weather_temp,
+  weather_wind,
+  attendance,
+  game_duration_minutes,
+  detailed_state
+FROM READ_PARQUET('data/live/games/game_*.parquet')
 
-FROM read_parquet('data/live/pitches/*.parquet')
-GROUP BY 1
+-- TODO consume historical data from DuckDB

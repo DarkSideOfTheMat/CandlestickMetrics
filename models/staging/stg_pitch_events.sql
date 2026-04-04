@@ -1,4 +1,6 @@
- SELECT 
+
+/*
+SELECT 
   game_date AS ds,
   
   -- game info
@@ -53,3 +55,4 @@
   on_2b,
   on_3b
 FROM raw.statcast_pitches
+*/

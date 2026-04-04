@@ -10,6 +10,9 @@ from dataclasses import dataclass
 
 DB_PATH = Path(__file__).parent.parent / "data" / "candlestick_metrics.duckdb"
 LIVE_DATA_DIR = Path(__file__).parent.parent / "data" / "live" / "pitches"
+LIVE_GAMES_DIR = Path(__file__).parent.parent / "data" / "live" / "games"
+LIVE_LINESCORE_DIR = Path(__file__).parent.parent / "data" / "live" / "linescores"
+LIVE_BOXSCORE_DIR = Path(__file__).parent.parent / "data" / "live" / "boxscores"
 
 SEASON = 2025
 MAX_CONCURRENT = 5
